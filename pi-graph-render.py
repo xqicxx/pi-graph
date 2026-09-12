@@ -260,6 +260,27 @@ body.list.dw #list{right:392px}
 #lbulk button.danger{color:#ffc9d4;border-color:#4a2231}
 #lbulk button.danger:hover{background:#3d1b22;border-color:var(--bad)}
 #lwrap{flex:1;overflow:auto;padding:0 13px 96px}
+/* ---------- 会话视图（动态：数据每次从 /api/sessions 拉）---------- */
+body.session svg,body.session #legend,body.session #thr{display:none}
+#sess{position:fixed;inset:47px 0 0 0;display:none;flex-direction:column;z-index:4}
+body.session #sess{display:flex}
+#sbar{flex:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 13px 8px;
+  border-bottom:2px solid var(--line)}
+#sbar select{font:inherit;font-size:13px;background:var(--panel);color:var(--ink);
+  border:2px solid var(--line);padding:2px 6px;max-width:46vw}
+#sbar .cnt{color:var(--dim);font-size:13px}
+#sbar .gap{flex:1}
+#swrap{flex:1;overflow:auto;padding:12px 13px 96px}
+#schain{display:flex;flex-wrap:wrap;gap:10px 9px;align-items:flex-start}
+.turn{width:224px;border:2px solid var(--line);background:var(--panel);padding:7px 9px 8px;cursor:pointer}
+.turn:hover{border-color:var(--accent)}
+.turn.cur{border-color:var(--accent2)}
+.turn.big{border-color:var(--warn)}
+.turn .n{color:var(--dim);font-size:12px}
+.turn .d{color:var(--ink);font-size:14px;margin:1px 0 2px}
+.turn .tk{color:var(--dim);font-size:12px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.turn .bar2{height:3px;background:var(--accent);margin-top:5px}
+.turn.big .bar2{background:var(--warn)}
 #ltable{border-collapse:separate;border-spacing:0;width:100%;font-size:13.5px}
 #ltable thead th{position:sticky;top:0;z-index:2;background:#0e0c14;text-align:left;font-weight:400;
   color:var(--dim);padding:7px 7px 6px;border-bottom:2px solid var(--accent);white-space:nowrap;
@@ -333,6 +354,16 @@ body.list.dw #list{right:392px}
       <tbody id="ltbody"></tbody>
     </table>
   </div>
+</div>
+<div id="sess">
+  <div id="sbar">
+    <select id="ssel"></select>
+    <button id="srefresh">⟳ 刷新</button>
+    <span class="cnt" id="scnt"></span>
+    <span class="gap"></span>
+    <span class="cnt">点卡片看该轮详情 · 每次打开实时拉取</span>
+  </div>
+  <div id="swrap"><div id="schain"></div></div>
 </div>
 </main>
 <div id="legend"></div>
@@ -438,7 +469,7 @@ let byId = new Map(), adj = new Map(), adjRel = new Map();
 const UP = {};   // id → {current, latest, outdated}
 
 // ================= 视图状态 =================
-let view = ['graph', 'flow', 'list'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'graph';
+let view = ['graph', 'flow', 'list', 'session'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'graph';
 // 列表默认只看「包」：进来就是能操作的那 29 个，而不是被 262 个 tool 淹没
 let filter = 'package';        // all | package | skill | tool | health
 let sortKey = 'usage', sortDir = -1;
@@ -1058,6 +1089,74 @@ function rowActions(n) {
   }
   return a;
 }
+// ================= 会话视图（动态：每次打开都从 /api/sessions 拉）=================
+// 生态图是内嵌的静态数据，会话不是 —— 它随时在长，所以这一层全部走接口。
+let SESS_LIST = [];
+
+async function loadSessions() {
+  const sel = $('#ssel'), chain = $('#schain');
+  chain.innerHTML = '<div class="turn"><span class="tk">读取会话列表…</span></div>';
+  try {
+    const r = await api('/api/sessions?limit=60');
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    SESS_LIST = j.sessions || [];
+    if (!SESS_LIST.length) throw new Error('没有会话');
+    sel.innerHTML = SESS_LIST.map(s =>
+      '<option value="' + esc(s.id) + '">' + esc(s.started.slice(0, 16).replace('T', ' ')) +
+      ' · ' + s.turns + '轮 · ' + s.tools + '工具 · ' + s.sizeMB + 'MB</option>').join('');
+    sel.value = SESS_LIST[0].id;
+    $('#scnt').textContent = '共 ' + j.total + ' 个会话';
+    await loadSession(SESS_LIST[0].id);
+  } catch (e) {
+    chain.innerHTML = '<div class="turn"><span class="tk">✗ ' + esc(e.message) +
+      ' —— 后端起了吗？（pi-graph-agent.sh install）</span></div>';
+  }
+}
+
+async function loadSession(id) {
+  const chain = $('#schain');
+  chain.innerHTML = '<div class="turn"><span class="tk">读取会话…</span></div>';
+  try {
+    const r = await api('/api/session?id=' + encodeURIComponent(id));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    const maxSec = Math.max(1, ...j.turns.map(t => t.seconds));
+    chain.innerHTML = j.turns.map(t => {
+      // 重轮（≥2 分钟或思考 ≥2 万字）标黄，一眼看出哪里最费
+      const heavy = t.seconds >= 120 || t.thinkingChars >= 20000;
+      const chips = [...new Set(t.tools)].slice(0, 3).join(' ');
+      const w = Math.max(4, Math.round(Math.min(1, t.seconds / maxSec) * 100));
+      return '<div class="turn' + (heavy ? ' big' : '') + '" data-n="' + t.n + '">' +
+        '<div class="n">#' + t.n + ' <span class="t">' + esc((t.start || '').slice(11, 19)) + '</span></div>' +
+        '<div class="d">' + t.seconds + 's · 思考 ' + t.thinkingChars + ' 字</div>' +
+        '<span class="tk">工具 ' + t.tools.length + (chips ? ' · ' + esc(chips) : '') + '</span>' +
+        '<div class="bar2" style="width:' + w + '%"></div></div>';
+    }).join('');
+    chain.querySelectorAll('.turn').forEach(el => {
+      el.onclick = () => showTurn(j, +el.dataset.n, el);
+    });
+    $('#scnt').textContent = j.turns.length + ' 轮 · ' + j.entries + ' 条目 · ' + j.sizeMB + 'MB' +
+      (j.branches ? ' · 分叉点 ' + j.branches : '');
+  } catch (e) {
+    chain.innerHTML = '<div class="turn"><span class="tk">✗ ' + esc(e.message) + '</span></div>';
+  }
+}
+
+function showTurn(sess, n, el) {
+  const t = sess.turns.find(x => x.n === n);
+  if (!t) return;
+  $('#schain').querySelectorAll('.turn').forEach(e => e.classList.remove('cur'));
+  el.classList.add('cur');
+  const counts = Object.entries(
+    t.tools.reduce((a, k) => ((a[k] = (a[k] || 0) + 1), a), {}),
+  ).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ' ×' + v).join('\n  ');
+  showPanel('会话第 ' + t.n + ' 轮',
+    '开始     ' + t.start + '\n耗时     ' + t.seconds + 's\n思考     ' + t.thinkingChars +
+    ' 字\n文本     ' + t.textChars + ' 字\n工具结果 ' + t.toolResults +
+    '\n\n工具调用（' + t.tools.length + '）:\n  ' + (counts || '（无）'));
+}
+
 function renderList() {
   const rows = sortRows(ROWS());
   const maxUse = Math.max(1, ...nodes.map(n => n._use || 0));
@@ -1177,12 +1276,14 @@ function setView(v) {
   document.body.classList.toggle('list', v === 'list');
   document.body.classList.toggle('graph', v === 'graph');
   document.body.classList.toggle('flow', v === 'flow');
-  $('#view').textContent = {graph: '◈ 流程视图', flow: '▤ 列表视图', list: '✦ 图谱视图'}[v];
+  document.body.classList.toggle('session', v === 'session');
+  $('#view').textContent = {graph: '◈ 流程视图', flow: '▤ 列表视图', list: '✦ 会话视图', session: '✦ 图谱视图'}[v];
   if (location.hash.slice(1) !== v) history.replaceState(null, '', '#' + v);
   layer.attr('display', v === 'graph' ? null : 'none');
   if (fLayer) fLayer.attr('display', v === 'flow' ? null : 'none');
   if (v === 'list') { renderList(); if (sim) sim.stop(); }
   else if (v === 'flow') { if (sim) sim.stop(); buildFlow(); fitFlow(); }
+  else if (v === 'session') { if (sim) sim.stop(); loadSessions(); }
   else { if (sim) sim.alpha(.3).restart(); applyFilters(); }
 }
 
@@ -1558,14 +1659,16 @@ function connectLive() {
 
 paintMode();
 connectLive();
-$('#view').onclick = () => setView({graph: 'flow', flow: 'list', list: 'graph'}[view]);
+$('#view').onclick = () => setView({graph: 'flow', flow: 'list', list: 'session', session: 'graph'}[view]);
+$('#ssel').onchange = e => loadSession(e.target.value);
+$('#srefresh').onclick = () => loadSessions();
 // Ctrl+`（或 Cmd+`）开关终端
 addEventListener('keydown', e => {
   if (e.key === '`' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); toggleTerm(); }
 });
 addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
-  setView(['graph', 'flow', 'list'].includes(h) ? h : 'graph');
+  setView(['graph', 'flow', 'list', 'session'].includes(h) ? h : 'graph');
 });
 bindList();
 render();

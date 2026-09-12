@@ -11,7 +11,7 @@
  *   3. 破坏性动作要 confirm:true；执行前自动备份 settings.json。
  *   4. --dry 只回显 argv 不执行（给自检用）。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   createReadStream,
@@ -82,6 +82,32 @@ function which(cmd) {
   }
   return null;
 }
+/** 跑一次 pi-graph.py 拿 stdout。会话 JSON 随会话增长（几十 MB），超时给宽一点。 */
+function runPy(args, timeout = 40000) {
+  const r = spawnSync("python3", [join(SCRIPTS, "pi-graph.py"), ...args], {
+    encoding: "utf-8",
+    timeout,
+    env: EXEC_ENV,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (r.error) return { ok: false, error: r.error.message };
+  if (r.status !== 0)
+    return {
+      ok: false,
+      error: (r.stderr || "").trim() || `退出码 ${r.status}`,
+    };
+  return { ok: true, text: (r.stdout || "").trim() };
+}
+
+/** 直接吐一段已经算好的 JSON（不解析再序列化，省一次往返） */
+function jsonText(res, code, text) {
+  res.writeHead(code, {
+    "content-type": "application/json; charset=utf-8",
+    ...CORS,
+  });
+  res.end(text);
+}
+
 // 固定 token：页面里内联同一份，双击 HTML 也能直接操作（见 pi-graph.py 的 stable_token）
 const TOKEN_FILE = join(AGENT, "pi-graph.token");
 let TOKEN = "";
@@ -400,6 +426,26 @@ async function handle(req, res) {
       path: p,
       text: txt.length > 60000 ? txt.slice(0, 60000) + "\n…(截断)" : txt,
     });
+  }
+
+  // 会话视图是动态的：面板每次打开都来这里取，不塞进内嵌的静态图谱
+  if (route === "/api/sessions") {
+    const limit = url.searchParams.get("limit") || "40";
+    if (!/^\d{1,3}$/.test(limit))
+      return json(res, 400, { error: "limit 需要是 1–3 位数字" });
+    const r = runPy(["sessions", limit, "--json"]);
+    if (!r.ok) return json(res, 500, { error: r.error });
+    return jsonText(res, 200, r.text);
+  }
+
+  if (route === "/api/session") {
+    // id 只允许会话文件名里会出现的字符，且不能以 - 开头（否则会变成参数）
+    const id = url.searchParams.get("id") || "";
+    if (!/^[A-Za-z0-9._][A-Za-z0-9._-]{3,79}$/.test(id))
+      return json(res, 400, { error: "id 不合法" });
+    const r = runPy(["session", id, "--json"]);
+    if (!r.ok) return json(res, 404, { error: r.error });
+    return jsonText(res, 200, r.text);
   }
 
   if (route === "/api/updates") {

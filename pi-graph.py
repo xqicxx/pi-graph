@@ -385,43 +385,82 @@ def _sess_secs(t0, t1):
     return max(0.0, (b - a).total_seconds())
 
 
-def _q_sessions(limit):
+def _sess_summary(p):
+    """一个会话的概览。文本输出和 --json 共用这一份数据，不各算一遍。"""
+    rows = _sess_rows(p)
+    turns = _sess_turns(rows)
+    first = next((r.get("timestamp") for r in rows if r.get("timestamp")), "")
+    return {
+        "id": p.stem,
+        "project": p.parent.name,
+        "started": first,
+        "entries": len(rows),
+        "turns": len(turns),
+        "tools": sum(len(t["tools"]) for t in turns),
+        "withThinking": sum(1 for t in turns if t["think"]),
+        "sizeMB": round(p.stat().st_size / 1e6, 1),
+    }
+
+
+def _q_sessions(limit, as_json=False):
     files = _sess_files()
     if not files:
         sys.exit("没有会话文件")
+    out = [_sess_summary(p) for p in files[:limit]]
+    if as_json:
+        print(json.dumps({"total": len(files), "sessions": out}, ensure_ascii=False))
+        return
     print(f"{min(limit, len(files))}/{len(files)} 个会话（按最近修改）")
-    for p in files[:limit]:
-        rows = _sess_rows(p)
-        turns = _sess_turns(rows)
-        tools = sum(len(t["tools"]) for t in turns)
-        think = sum(1 for t in turns if t["think"])
-        first = next((r.get("timestamp") for r in rows if r.get("timestamp")), "")
+    for s in out:
         print(
-            f"  {p.stem[:13]:<14} {first[:16]}  {len(turns):>4}轮 {tools:>4}工具 "
-            f"{think:>4}带思考 {p.stat().st_size / 1e6:>6.1f}MB  {p.parent.name}"
+            f"  {s['id'][:13]:<14} {s['started'][:16]}  {s['turns']:>4}轮 {s['tools']:>4}工具 "
+            f"{s['withThinking']:>4}带思考 {s['sizeMB']:>6.1f}MB  {s['project']}"
         )
 
 
-def _q_session(sid):
+def _q_session(sid, as_json=False):
     hits = [p for p in _sess_files() if sid in p.stem]
     if not hits:
         sys.exit(f"无匹配会话: {sid}")
     p = hits[0]
-    if len(hits) > 1:
-        print(f"⚠️  {len(hits)} 个会话匹配 {sid}，取最近的一个；要精确定位请给更长的前缀")
     rows = _sess_rows(p)
     turns = _sess_turns(rows)
-    print(f"会话 {p.stem}")
+    data = {
+        "id": p.stem,
+        "path": str(p),
+        "project": p.parent.name,
+        "entries": len(rows),
+        "branches": _sess_branches(rows),
+        "sizeMB": round(p.stat().st_size / 1e6, 1),
+        "turns": [
+            {
+                "n": i,
+                "start": t["start"],
+                "seconds": round(_sess_secs(t["start"], t["end"]), 1),
+                "thinkingChars": t["think"],
+                "textChars": t["text"],
+                "toolResults": t["results"],
+                "tools": t["tools"],
+            }
+            for i, t in enumerate(turns, 1)
+        ],
+    }
+    if as_json:
+        print(json.dumps(data, ensure_ascii=False))
+        return
+    if len(hits) > 1:
+        print(f"⚠️  {len(hits)} 个会话匹配 {sid}，取最近的一个；要精确定位请给更长的前缀")
+    print(f"会话 {data['id']}")
     print(
-        f"  条目 {len(rows)}   轮 {len(turns)}   分叉点 {_sess_branches(rows)}   "
-        f"{p.stat().st_size / 1e6:.1f}MB   {p.parent.name}"
+        f"  条目 {data['entries']}   轮 {len(turns)}   分叉点 {data['branches']}   "
+        f"{data['sizeMB']}MB   {data['project']}"
     )
-    for i, t in enumerate(turns, 1):
+    for t in data["turns"]:
         names = Counter(t["tools"]).most_common(4)
         tools = " ".join(f"{n}x{c}" if c > 1 else n for n, c in names) or "-"
         print(
-            f"  #{i:<4} {t['start'][11:19]} {_sess_secs(t['start'], t['end']):>6.1f}s  "
-            f"思考{t['think']:>6}字 工具{len(t['tools']):>3}个: {tools[:58]}"
+            f"  #{t['n']:<4} {t['start'][11:19]} {t['seconds']:>6.1f}s  "
+            f"思考{t['thinkingChars']:>6}字 工具{len(t['tools']):>3}个: {tools[:58]}"
         )
 
 
@@ -459,16 +498,20 @@ if len(sys.argv) > 1:
     elif _arg == "serve":
         _serve(_rest)
     elif _arg == "sessions":
+        _json = "--json" in _rest
+        _args = [a for a in _rest if a != "--json"]
         try:
-            _limit = int(_rest[0]) if _rest else 20
+            _limit = int(_args[0]) if _args else 20
         except ValueError:
             # isdigit() 挡不住 '²' 这类 Unicode 数字，这里才是真的守卫
-            sys.exit(f"sessions 的参数应是数字: {_rest[0]}")
-        _q_sessions(_limit)
+            sys.exit(f"sessions 的参数应是数字: {_args[0]}")
+        _q_sessions(_limit, _json)
     elif _arg == "session":
-        if not _rest:
+        _json = "--json" in _rest
+        _args = [a for a in _rest if a != "--json"]
+        if not _args:
             sys.exit("session 需要会话 id 前缀")
-        _q_session(_rest[0])
+        _q_session(_args[0], _json)
     else:
         _g = _load()
         if _arg == "stats":
