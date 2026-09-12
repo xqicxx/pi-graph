@@ -747,6 +747,21 @@ for _n in nodes.values():
 
 
 # ---------- 8. 健康信号 ----------
+
+
+def _dep_present(pkg_dir: Path, dep: str) -> bool:
+    """按 Node 的解析规则找依赖，别只看共享 node_modules 的根。
+
+    npm 会把版本冲突的依赖嵌套装在包自己下面（…/pkg/node_modules/ignore），
+    git 装的包则把依赖装在自己目录里（…/pi-browser-harness/node_modules/tsx）。
+    只查根目录会把这俩误判成"缺依赖"（真实踩到过）。
+    """
+    for d in [pkg_dir, *pkg_dir.parents]:
+        if d.name == "node_modules":
+            continue  # Node 也会跳过这些祖先，它们不是查找根
+        if (d / "node_modules" / dep).exists():
+            return True
+    return False
 # 全部本地可查、零网络：装丢了 / 依赖残缺 / 重复声明 / 孤立 skill /
 # mcp 没加载（再分两种：配置里声明了没起来、只在运行期注册表里露面）
 for _n in nodes.values():
@@ -763,7 +778,9 @@ for _n in nodes.values():
             _j = json.loads((_p / "package.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        _broken = [d for d in (_j.get("dependencies") or {}) if not (NPM / d).exists()]
+        _broken = [
+            d for d in (_j.get("dependencies") or {}) if not _dep_present(_p, d)
+        ]
         if _broken:
             _n["health"] = "broken-deps"
             _n["healthDetail"] = "缺依赖: " + ", ".join(_broken[:4])
