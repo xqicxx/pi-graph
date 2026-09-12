@@ -53,13 +53,15 @@ HEALTH_COLOR = {
   "broken-deps": "#e06c75",
   "duplicate": "#F3B5D2",
   "inactive": "#6f6a86",
+  "registry-only": "#e5c07b",
   "leftover": "#F3B5D2",
 }
 HEALTH_LABEL = {
   "missing": "目录不在",
   "broken-deps": "依赖残缺",
   "duplicate": "重复声明",
-  "inactive": "未加载",
+  "inactive": "声明未加载",
+  "registry-only": "注册表残留",
   "leftover": "卸载残留",
 }
 

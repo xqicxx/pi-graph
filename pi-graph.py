@@ -293,7 +293,15 @@ def _selftest():
     unhealthy = {n["id"]: n.get("health") for n in by_id.values() if n.get("health")}
     check(
         all(
-            v in ("missing", "broken-deps", "duplicate", "inactive", "leftover")
+            v
+            in (
+                "missing",
+                "broken-deps",
+                "duplicate",
+                "inactive",
+                "registry-only",
+                "leftover",
+            )
             for v in unhealthy.values()
         ),
         f"未知健康标记: {unhealthy}",
@@ -739,7 +747,8 @@ for _n in nodes.values():
 
 
 # ---------- 8. 健康信号 ----------
-# 全部本地可查、零网络：装丢了 / 依赖残缺 / 重复声明 / 孤立 skill / 声明了但没加载的 mcp
+# 全部本地可查、零网络：装丢了 / 依赖残缺 / 重复声明 / 孤立 skill /
+# mcp 没加载（再分两种：配置里声明了没起来、只在运行期注册表里露面）
 for _n in nodes.values():
     if _n["kind"] != "package":
         continue
@@ -767,11 +776,21 @@ for _n in nodes.values():
 
 
 for _n in nodes.values():
-    if _n["kind"] == "mcp" and not any(
-        b == _n["id"] and k == "provides" for a, b, k in edges
-    ):
-        _n.setdefault("health", "inactive")  # 配置文件里声明，本次运行没加载
-        _n.setdefault("healthDetail", "已声明但运行期未加载")
+    if _n["kind"] != "mcp":
+        continue
+    if any(b == _n["id"] and k == "provides" for a, b, k in edges):
+        continue  # 运行期真的加载了，没病
+    # 两种「没加载」含义不同，别混成一句话：
+    #   inactive      = 配置文件里声明了，但本次运行没起来
+    #   registry-only = 只在运行期注册表里露面，配置里查不到声明（多半是缓存/旧会话残留）
+    if _n.get("file") or _n.get("configKey"):
+        _n.setdefault("health", "inactive")
+        _n.setdefault("healthDetail", "配置里声明了，但本次运行没加载")
+    else:
+        _n.setdefault("health", "registry-only")
+        _n.setdefault(
+            "healthDetail", "只在运行期注册表里出现，配置文件里查不到声明"
+        )
 
 
 # ---------- 9. 使用热度（会话转录） ----------
