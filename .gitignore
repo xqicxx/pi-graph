@@ -1,0 +1,6 @@
+# 这个仓库只跟踪 pi-graph 相关的文件；
+# 同一目录下还有大量本机私用脚本，一律不进仓库。
+*
+!.gitignore
+!README.md
+!pi-graph*
