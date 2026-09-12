@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 const HOME = homedir();
 const SCRIPTS = join(HOME, ".pi", "scripts");
@@ -112,10 +112,13 @@ const ACTIONS = {
   uninstall: (n) =>
     n.kind === "package" && n.spec ? piCmd(["remove", n.spec]) : null,
   // 删除只对本机 skills 目录生效（包内 skill 是包的一部分，只读）
-  rmSkill: (n) =>
-    n.kind === "skill" && n.source === "local" && n.writable
-      ? ["rm", "-rf", n.path]
-      : null,
+  rmSkill: (n) => {
+    if (n.kind !== "skill" || n.source !== "local" || !n.writable || !n.path)
+      return null;
+    // 只允许删本机 skills 目录里的东西（对比 rmLeftover 的同类检查）
+    if (!within(join(AGENT, "skills"), n.path)) return null;
+    return ["rm", "-rf", resolve(n.path)];
+  },
   // 卸载残留：不清就永远躺在那儿，界面又点不到（没有 spec 就没动作）
   // 移到废纸篓而不是 rm，误删还能捞回来
   rmLeftover: (n) => {
@@ -198,16 +201,30 @@ function nodeOf(id) {
   }
 }
 
+// 请求体上限：本地服务也不该被一个超长 body 撑爆内存
+const BODY_MAX = 1_000_000;
 function body(req) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveBody, reject) => {
     let s = "";
-    req.on("data", (c) => (s += c));
-    req.on("end", () => resolve(s));
+    req.on("data", (c) => {
+      s += c;
+      if (s.length > BODY_MAX) {
+        reject(new Error("请求体过大"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => resolveBody(s));
     req.on("error", reject);
   });
 }
 
-const server = createServer(async (req, res) => {
+/** 路径必须落在某个目录里（真包含，不是字符串前缀）。 */
+function within(dir, p) {
+  const r = resolve(p);
+  return r === resolve(dir) || r.startsWith(resolve(dir) + sep);
+}
+
+async function handle(req, res) {
   const url = new URL(req.url, "http://127.0.0.1");
   const route = url.pathname;
   const tok = url.searchParams.get("token") ?? req.headers["x-token"];
@@ -283,6 +300,9 @@ const server = createServer(async (req, res) => {
   } catch {
     return json(res, 400, { error: "请求体不是合法 JSON" });
   }
+  // null / 数组 / 标量都不是我们要的对象；不挡的话后面 q.ids 会抛 TypeError
+  if (q === null || typeof q !== "object" || Array.isArray(q))
+    return json(res, 400, { error: "请求体需要是 JSON 对象" });
 
   if (route === "/api/preview") {
     // 批量预览：只算 argv，一个都不执行
@@ -362,8 +382,10 @@ const server = createServer(async (req, res) => {
     const node = nodeOf(q.id) || {};
     let p = q.path || node.file || join(node.path || "", "SKILL.md");
     if (node.kind === "skill") p = join(node.path || "", "SKILL.md");
-    if (!p || !p.startsWith(AGENT) || !existsSync(p))
+    // 真包含判断：startsWith(AGENT) 会被 …/agent/../../.zshrc 这种前缀骗过去
+    if (!p || !within(AGENT, p) || !existsSync(p))
       return json(res, 404, { error: "读不到 " + p });
+    p = resolve(p);
     const st = statSync(p);
     if (st.isDirectory()) return json(res, 400, { error: "是目录" });
     const txt = readFileSync(p, "utf8");
@@ -405,6 +427,17 @@ const server = createServer(async (req, res) => {
   }
 
   return json(res, 404, { error: "no such route" });
+}
+
+// 单个坏请求不该带走整个服务：任何未捕获的异常都变成 500
+const server = createServer((req, res) => {
+  handle(req, res).catch((e) => {
+    try {
+      json(res, 500, { error: String((e && e.message) || e) });
+    } catch {
+      /* 响应已经开始写了，只能作罢 */
+    }
+  });
 });
 
 // ---------- P4：更新检查（npm registry，6 小时文件缓存）----------

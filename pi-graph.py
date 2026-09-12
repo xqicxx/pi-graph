@@ -319,8 +319,13 @@ def _sess_files():
 
 
 def _sess_rows(path):
+    """读一个会话文件。文件可能在读的瞬间被删/被换（会话随时在写），失败就当空。"""
     rows = []
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return rows
+    for line in text.splitlines():
         try:
             rows.append(json.loads(line))
         except ValueError:
@@ -402,6 +407,8 @@ def _q_session(sid):
     if not hits:
         sys.exit(f"无匹配会话: {sid}")
     p = hits[0]
+    if len(hits) > 1:
+        print(f"⚠️  {len(hits)} 个会话匹配 {sid}，取最近的一个；要精确定位请给更长的前缀")
     rows = _sess_rows(p)
     turns = _sess_turns(rows)
     print(f"会话 {p.stem}")
@@ -452,9 +459,12 @@ if len(sys.argv) > 1:
     elif _arg == "serve":
         _serve(_rest)
     elif _arg == "sessions":
-        if _rest and not _rest[0].isdigit():
+        try:
+            _limit = int(_rest[0]) if _rest else 20
+        except ValueError:
+            # isdigit() 挡不住 '²' 这类 Unicode 数字，这里才是真的守卫
             sys.exit(f"sessions 的参数应是数字: {_rest[0]}")
-        _q_sessions(int(_rest[0]) if _rest else 20)
+        _q_sessions(_limit)
     elif _arg == "session":
         if not _rest:
             sys.exit("session 需要会话 id 前缀")

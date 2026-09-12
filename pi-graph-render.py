@@ -1595,6 +1595,18 @@ def b64(name: str) -> str:
   return base64.b64encode(p.read_bytes()).decode() if p.exists() else ""
 
 
+def _js_json(obj) -> str:
+    """嵌进 <script> 的 JSON。json.dumps 不转义 <，描述里出现 </script> 会提前闭合脚本标签。"""
+    return (
+        json.dumps(obj, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def build(out_path: Path):
   if not SRC.exists():
     sys.exit(f"找不到图谱数据 {SRC}\n先运行: python3 ~/.pi/scripts/pi-graph.py")
@@ -1646,10 +1658,10 @@ def build(out_path: Path):
   out = (
     HTML.replace("__TOKEN__", local_token())
     .replace("__D3__", d3src)
-    .replace("__DATA__", json.dumps(payload, ensure_ascii=False))
-    .replace("__COLORS__", json.dumps(COLORS))
-    .replace("__HCOLOR__", json.dumps(HEALTH_COLOR))
-    .replace("__HLABEL__", json.dumps(HEALTH_LABEL, ensure_ascii=False))
+    .replace("__DATA__", _js_json(payload))
+    .replace("__COLORS__", _js_json(COLORS))
+    .replace("__HCOLOR__", _js_json(HEALTH_COLOR))
+    .replace("__HLABEL__", _js_json(HEALTH_LABEL))
     .replace("__STAT__", stat)
     .replace("__FONT_VT__", b64("vt323.woff2"))
     .replace("__FONT_P2P__", b64("pressstart2p.woff2"))
