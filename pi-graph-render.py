@@ -352,7 +352,7 @@ body.list.dw #list{right:392px}
 <div id="term">
   <div class="bar">
     <span>▮ 终端</span>
-    <span class="warn">在本机执行任意命令（与右侧白名单动作是两套，--no-shell 可关）</span>
+    <span class="warn" id="twarn">在本机执行任意命令（与右侧白名单动作是两套）</span>
     <span class="gap"></span>
     <button id="tstop" class="stop">■ 停止</button>
     <button id="tclear">清空</button>
@@ -381,6 +381,7 @@ const PORT = new URLSearchParams(location.search).get('port') || '8787';
 // file:// 打开时后端在 127.0.0.1，得走绝对地址；由服务端托管时同源相对即可
 const BASE = location.protocol === 'file:' ? 'http://127.0.0.1:' + PORT : '';
 let OFFLINE = true;   // 启动时探一次 /api/ping
+let SHELL_ON = true;  // 服务端有没有开 /api/shell（默认关，加 --shell 才开）
 const POSKEY = 'pi-graph-pos';
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -514,8 +515,18 @@ function termLine(s, cls) {
   tout.appendChild(d);
   tout.scrollTop = tout.scrollHeight;
 }
+function applyShellState() {
+  const w = document.querySelector('#twarn');
+  if (w)
+    w.textContent = SHELL_ON
+      ? '在本机执行任意命令（与右侧白名单动作是两套）'
+      : '已关闭 —— 起服务时加 --shell 才可用';
+  const inp = document.querySelector('#tcmd');
+  if (inp) inp.disabled = !SHELL_ON;
+}
 async function runShell(cmd) {
   if (OFFLINE) return termLine('✗ 后端未连。先跑 pi-graph-agent.sh install\n', 'err');
+  if (!SHELL_ON) return termLine('✗ 网页终端未开启。起服务时加 --shell\n', 'err');
   if (termBusy) return termLine('✗ 上一条还在跑，点「停止」或等它结束\n', 'err');
   termLine('$ ' + cmd + '\n', 'cmd');
   termBusy = true;
@@ -1461,6 +1472,8 @@ async function ping() {
     const r = await fetch(BASE + '/api/ping', {cache: 'no-store', headers: {'x-token': TOKEN}});
     const j = await r.json();
     OFFLINE = !(j && j.ok && j.tokenOk);
+    SHELL_ON = !!(j && j.shell);
+    applyShellState();
     // 我改过脚本、重建过 HTML 之后，已经开着的标签页不会自己刷新 —— 提醒一下
     if (j && j.htmlMtime) {
       if (!myBuild) myBuild = j.htmlMtime;

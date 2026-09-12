@@ -40,8 +40,9 @@ const DRY = argv.includes("--dry");
 const OPEN = argv.includes("--open");
 // 网页终端 = 在本机执行任意命令。它和 /api/action 的白名单是两回事：
 // action 永远不会执行请求体里的字符串，shell 就是干这个的。
-// 默认开（用户要的就是点一下就跑），要关就 --no-shell。
-const SHELL = !argv.includes("--no-shell");
+// 默认关：这是个能跑任意命令的端点，公开分享的项目不该默认开。
+// 要网页终端就显式加 --shell。右键动作不受影响（那是白名单 argv + 二次确认）。
+const SHELL = argv.includes("--shell");
 const SHELL_BIN = process.env.SHELL || "/bin/zsh";
 const SHELL_MAX = 4000;
 // PATH 里必须自己补上 pi / node 的位置。
@@ -136,7 +137,12 @@ const ACTIONS = {
   // 下次 pi update / pi install 触发的 npm install 会把它装回来（真实踩到过）
   forget: (n) =>
     n.health === "leftover" && n.path && n.path.includes("/npm/node_modules/")
-      ? ["python3", join(SCRIPTS, "pi-graph.py"), "forget", n.path.split("/").pop()]
+      ? [
+          "python3",
+          join(SCRIPTS, "pi-graph.py"),
+          "forget",
+          n.path.split("/").pop(),
+        ]
       : null,
 };
 const DESTRUCTIVE = new Set([
@@ -274,6 +280,7 @@ async function handle(req, res) {
       tokenOk: tok === TOKEN,
       dry: DRY,
       port: PORT,
+      shell: SHELL,
       graph: GRAPH,
       htmlMtime,
     });
@@ -411,7 +418,7 @@ async function handle(req, res) {
   if (route === "/api/shell") {
     if (!SHELL)
       return json(res, 403, {
-        error: "网页终端已禁用（服务启动时带了 --no-shell）",
+        error: "网页终端未开启（起服务时加 --shell）",
       });
     if (DRY)
       return json(res, 200, {
@@ -580,7 +587,11 @@ function preview({ action, id, path }, act) {
     if (!mv) {
       return existsSync(n.path)
         ? { error: "路径不在 ~/.pi/agent 下，已拒绝" }
-        : { error: n.path + " 已经不在那儿了（多半已经清理过）—— 点「重新扫描」刷新图谱" };
+        : {
+            error:
+              n.path +
+              " 已经不在那儿了（多半已经清理过）—— 点「重新扫描」刷新图谱",
+          };
     }
     steps.push(mv);
     return { id, kind: n.kind, spec: n.spec, steps, cwd: HOME };
@@ -602,7 +613,8 @@ function preview({ action, id, path }, act) {
     const build = ACTIONS[action];
     if (!build) return { error: "未知动作 " + action };
     const cmd = build(n);
-    if (!cmd && action === "forget") return { error: "不需要（这个残留不在 npm 工作区里）" };
+    if (!cmd && action === "forget")
+      return { error: "不需要（这个残留不在 npm 工作区里）" };
     if (!cmd) {
       if (action === "update" && n.pinned)
         return { error: "ref 已固定，用 pi install " + n.spec + "@新ref" };
